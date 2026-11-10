@@ -1,0 +1,118 @@
+# JayLocked for Windows, built and proven on a real Windows machine in the public repository
+# Narikia1/jaylocked-apps. It builds a given commit of the private Narikia1/jaylocked (read with a read-only
+# deploy key), walks through the app off-screen, installs the result, runs it, and uploads the installer and the
+# evidence. It publishes nothing.
+name: Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit of Narikia1/jaylocked to build
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+      AVALONIA_TELEMETRY_OPTOUT: 1
+      EVIDENCE: ${{ github.workspace }}\evidence
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Narikia1/jaylocked
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.JAYLOCKED_SOURCE_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Generated files are current, and nothing is hardcoded
+        run: |
+          node scripts/generate.mjs --check
+          node scripts/check-hygiene.mjs
+
+      - name: Engine tests
+        run: cargo test --locked --release --manifest-path engine/Cargo.toml
+
+      - name: Engine for Windows
+        shell: bash
+        run: scripts/build-engine.sh windows
+
+      - name: Walk through the app off-screen (setup, import, folders, logins, backup, lock)
+        run: dotnet test apps/windows/JayLocked.Tests/JayLocked.Tests.csproj -r win-x64 -c Release
+
+      - name: Publish
+        run: dotnet publish apps/windows/JayLocked/JayLocked.csproj -r win-x64 -c Release --self-contained
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/windows/publish/jaylocked_engine.dll)) { throw 'The engine is missing from the app' }
+          choco install innosetup -y --no-progress
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" | Select-Object -First 1
+          & $iscc.FullName apps\windows\installer\jaylocked.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item dist\windows\JayLocked-Setup.exe | Format-List FullName, Length
+
+      - name: Install silently, for this user only
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath dist\windows\JayLocked-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { exit $proc.ExitCode }
+          $exe = "$env:LOCALAPPDATA\Programs\JayLocked\JayLocked.exe"
+          if (-not (Test-Path $exe)) { throw "Not installed at $exe" }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\JayLocked.lnk")) { throw 'No Start menu shortcut' }
+          "EXE=$exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Run the installed app; its window must be left out of screen captures
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+          New-Item -ItemType Directory -Force -Path $env:EVIDENCE | Out-Null
+          $app = Start-Process -FilePath $env:EXE -PassThru
+          Start-Sleep -Seconds 15
+          if ($app.HasExited) { throw "The app exited with code $($app.ExitCode)" }
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bitmap.Save("$env:EVIDENCE\desktop-with-jaylocked-open.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $graphics.Dispose(); $bitmap.Dispose()
+          $app.CloseMainWindow() | Out-Null
+          Start-Sleep -Seconds 5
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force; Write-Host 'The app needed a forced close.' }
+
+      - name: Uninstaller works
+        shell: pwsh
+        run: |
+          $uninstaller = Get-ChildItem "$env:LOCALAPPDATA\Programs\JayLocked\unins*.exe" | Select-Object -First 1
+          $proc = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          Write-Host "Uninstaller exit code: $($proc.ExitCode)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: JayLocked-Setup
+          path: dist/windows/JayLocked-Setup.exe
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence
+          path: evidence
+          if-no-files-found: warn
