@@ -87,6 +87,10 @@ jobs:
           $app = Start-Process -FilePath $env:EXE -PassThru
           Start-Sleep -Seconds 15
           if ($app.HasExited) { throw "The app exited with code $($app.ExitCode)" }
+          # In front of everything, so the picture shows what a screen capture of JayLocked's window gets.
+          Add-Type -AssemblyName Microsoft.VisualBasic
+          [Microsoft.VisualBasic.Interaction]::AppActivate($app.Id)
+          Start-Sleep -Seconds 2
           $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
           $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
           $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
