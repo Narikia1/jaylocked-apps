@@ -1,7 +1,12 @@
 # JayLocked for Windows, built and proven on a real Windows machine in the public repository
 # Narikia1/jaylocked-apps. It builds a given commit of the private Narikia1/jaylocked (read with a read-only
-# deploy key), walks through the app off-screen, installs the result, runs it, and uploads the installer and the
-# evidence. It publishes nothing.
+# deploy key), walks through the app off-screen, installs the result, runs it, and keeps the installer, its SHA-256
+# and the evidence as artifacts of the run. The installer also gets a signed record of where it was built (an
+# attestation), which anyone can check with `gh attestation verify JayLocked-Setup.exe -R Narikia1/jaylocked-apps`.
+# A release is made by hand from a green run's files.
+#
+# Every action is named by its full commit, so a moved tag can't change what runs here. Nothing is downloaded and
+# run besides those actions, Node, .NET and the Rust version named in rust-toolchain.toml.
 name: Windows
 
 on:
@@ -13,6 +18,9 @@ on:
 
 permissions:
   contents: read
+  # For the attestation only: a short-lived identity for this run, and the right to store the record.
+  id-token: write
+  attestations: write
 
 concurrency:
   group: windows
@@ -26,18 +34,21 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_NOLOGO: 1
       AVALONIA_TELEMETRY_OPTOUT: 1
+      # Exactly the packages in the committed lock files (apps/windows/*/packages*.lock.json); a restore that
+      # would change them fails instead.
+      RestoreLockedMode: true
       EVIDENCE: ${{ github.workspace }}\evidence
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: Narikia1/jaylocked
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.JAYLOCKED_SOURCE_KEY }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: 10.0.x
 
@@ -45,6 +56,7 @@ jobs:
         run: |
           node scripts/generate.mjs --check
           node scripts/check-hygiene.mjs
+          node scripts/check-secrets.mjs
 
       - name: Engine tests
         run: cargo test --locked --release --manifest-path engine/Cargo.toml
@@ -63,11 +75,15 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path dist/windows/publish/jaylocked_engine.dll)) { throw 'The engine is missing from the app' }
-          choco install innosetup -y --no-progress
+          # Inno Setup comes with the runner; nothing is fetched here. Without it the run stops.
           $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" | Select-Object -First 1
+          if (-not $iscc) { throw 'Inno Setup is not on this runner' }
           & $iscc.FullName apps\windows\installer\jaylocked.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-Item dist\windows\JayLocked-Setup.exe | Format-List FullName, Length
+          $hash = (Get-FileHash dist\windows\JayLocked-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          # One line that `shasum -a 256 -c` reads on a Mac too: no carriage return, no byte order mark.
+          [IO.File]::WriteAllText("$PWD\dist\windows\SHA256SUMS.txt", "$hash  JayLocked-Setup.exe`n")
+          Get-Content dist\windows\SHA256SUMS.txt
 
       - name: Install silently, for this user only
         shell: pwsh
@@ -108,15 +124,22 @@ jobs:
           $proc = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
           Write-Host "Uninstaller exit code: $($proc.ExitCode)"
 
-      - uses: actions/upload-artifact@v4
-        if: always()
+      # Only an installer that passed every step above is kept, with its SHA-256 and its attestation.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/windows/JayLocked-Setup.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: JayLocked-Setup
-          path: dist/windows/JayLocked-Setup.exe
-          if-no-files-found: warn
-      - uses: actions/upload-artifact@v4
+          path: |
+            dist/windows/JayLocked-Setup.exe
+            dist/windows/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: evidence
           path: evidence
           if-no-files-found: warn
+          retention-days: 14
