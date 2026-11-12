@@ -6,7 +6,9 @@
 # A release is made by hand from a green run's files.
 #
 # Every action is named by its full commit, so a moved tag can't change what runs here. Nothing is downloaded and
-# run besides those actions, Node, .NET and the Rust version named in rust-toolchain.toml.
+# run besides those actions, Node, .NET, the Rust version named in rust-toolchain.toml, and libmpv, the player
+# (scripts/fetch-libmpv.mjs): one pinned build, taken only when the archive and the DLL in it have the SHA-256
+# written in that script.
 name: Windows
 
 on:
@@ -65,7 +67,19 @@ jobs:
         shell: bash
         run: scripts/build-engine.sh windows
 
-      - name: Walk through the app off-screen (setup, import, folders, logins, backup, lock)
+      - name: Keep a copy of libmpv, whose release is gone after about a month
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/libmpv-pin
+          key: libmpv-${{ hashFiles('scripts/fetch-libmpv.mjs') }}
+
+      - name: The pinned libmpv, checked against its SHA-256
+        shell: pwsh
+        run: |
+          node scripts/fetch-libmpv.mjs --cache "$env:RUNNER_TEMP\libmpv-pin"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Walk through the app off-screen (setup, import, folders, logins, backup, lock, videos and music, libmpv playing from the vault)
         run: dotnet test apps/windows/JayLocked.Tests/JayLocked.Tests.csproj -r win-x64 -c Release
 
       - name: Publish
@@ -75,6 +89,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path dist/windows/publish/jaylocked_engine.dll)) { throw 'The engine is missing from the app' }
+          if (-not (Test-Path dist/windows/publish/libmpv-2.dll)) { throw 'The player is missing from the app' }
           # Inno Setup comes with the runner; nothing is fetched here. Without it the run stops.
           $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" | Select-Object -First 1
           if (-not $iscc) { throw 'Inno Setup is not on this runner' }
@@ -92,6 +107,7 @@ jobs:
           if ($proc.ExitCode -ne 0) { exit $proc.ExitCode }
           $exe = "$env:LOCALAPPDATA\Programs\JayLocked\JayLocked.exe"
           if (-not (Test-Path $exe)) { throw "Not installed at $exe" }
+          if (-not (Test-Path "$env:LOCALAPPDATA\Programs\JayLocked\libmpv-2.dll")) { throw 'The player was not installed' }
           if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\JayLocked.lnk")) { throw 'No Start menu shortcut' }
           "EXE=$exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
