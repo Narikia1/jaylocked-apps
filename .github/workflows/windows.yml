@@ -8,7 +8,7 @@
 # Every action is named by its full commit, so a moved tag can't change what runs here. Nothing is downloaded and
 # run besides those actions, Node, .NET, the Rust version named in rust-toolchain.toml, and libmpv, the player
 # (scripts/fetch-libmpv.mjs): one pinned build, taken only when the archive and the DLL in it have the SHA-256
-# written in that script.
+# written in core/licences.json.
 name: Windows
 
 on:
@@ -59,6 +59,7 @@ jobs:
           node scripts/generate.mjs --check
           node scripts/check-hygiene.mjs
           node scripts/check-secrets.mjs
+          node scripts/generate-licences.mjs --check
 
       - name: Engine tests
         run: cargo test --locked --release --manifest-path engine/Cargo.toml
@@ -71,7 +72,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/libmpv-pin
-          key: libmpv-${{ hashFiles('scripts/fetch-libmpv.mjs') }}
+          key: libmpv-${{ hashFiles('core/licences.json') }}
 
       - name: The pinned libmpv, checked against its SHA-256
         shell: pwsh
